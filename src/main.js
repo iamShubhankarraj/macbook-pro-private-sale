@@ -1,5 +1,6 @@
 import './styles.css';
 import * as THREE from 'three/webgpu';
+import * as THREEGL from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
@@ -126,36 +127,69 @@ function buildLaptop(scene, detailed=false){
   return root;
 }
 
+function drawProductFallback(canvas){
+  const w=Math.max(1,canvas.clientWidth||900), h=Math.max(1,canvas.clientHeight||560), dpr=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.floor(w*dpr); canvas.height=Math.floor(h*dpr);
+  const c=canvas.getContext('2d'); if(!c) return;
+  c.setTransform(dpr,0,0,dpr,0,0); c.clearRect(0,0,w,h);
+  const bg=c.createRadialGradient(w*.52,h*.38,20,w*.52,h*.52,Math.max(w,h)*.72); bg.addColorStop(0,'#2d2b27'); bg.addColorStop(.62,'#111112'); bg.addColorStop(1,'#070708'); c.fillStyle=bg; c.fillRect(0,0,w,h);
+  const sx=w*.16, sy=h*.23, sw=w*.66, sh=h*.43;
+  c.save(); c.translate(sx,sy); c.transform(1,0,-.13,1,0,0);
+  c.shadowColor='rgba(0,0,0,.58)'; c.shadowBlur=30; c.shadowOffsetY=22;
+  const lid=c.createLinearGradient(0,0,sw,sh); lid.addColorStop(0,'#f2eee5'); lid.addColorStop(.36,'#d6d0c5'); lid.addColorStop(.72,'#aaa49a'); lid.addColorStop(1,'#7d7971');
+  c.fillStyle=lid; c.beginPath(); c.roundRect(0,0,sw,sh,18); c.fill(); c.shadowColor='transparent';
+  c.strokeStyle='rgba(255,255,255,.48)'; c.lineWidth=1.2; c.stroke();
+  const screen=c.createLinearGradient(0,0,sw,sh); screen.addColorStop(0,'#0b0d11'); screen.addColorStop(.5,'#202735'); screen.addColorStop(1,'#050607');
+  c.fillStyle=screen; c.beginPath(); c.roundRect(18,16,sw-36,sh-34,10); c.fill();
+  c.fillStyle='#050505'; c.beginPath(); c.roundRect(sw*.47,16,sw*.10,12,6); c.fill();
+  c.fillStyle='rgba(255,255,255,.05)'; c.beginPath(); c.roundRect(32,30,sw-64,sh-64,5); c.fill();
+  c.fillStyle='rgba(240,225,190,.18)'; c.beginPath(); c.arc(sw*.50,sh*.57,32,0,Math.PI*2); c.fill();
+  c.restore();
+  // base / keyboard deck in perspective
+  c.save(); c.translate(w*.08,h*.62); c.transform(1,0,.12,1,0,0); const bw=w*.76,bh=h*.16;
+  c.shadowColor='rgba(0,0,0,.65)'; c.shadowBlur=28; c.shadowOffsetY=20;
+  const base=c.createLinearGradient(0,0,bw,bh); base.addColorStop(0,'#e6e0d5'); base.addColorStop(.5,'#bbb5ab'); base.addColorStop(1,'#79756e'); c.fillStyle=base; c.beginPath(); c.roundRect(0,0,bw,bh,14); c.fill(); c.shadowColor='transparent';
+  c.strokeStyle='rgba(255,255,255,.4)'; c.stroke();
+  const cols=14, rows=5, kw=bw*.034, kh=bh*.14, gap=kw*.22; const ox=bw*.16, oy=bh*.13;
+  for(let r=0;r<rows;r++) for(let col=0;col<cols;col++){c.fillStyle='#292a2a'; c.beginPath(); c.roundRect(ox+col*(kw+gap),oy+r*(kh+3),kw,kh,2); c.fill();}
+  c.fillStyle='#b5afa5'; c.beginPath(); c.roundRect(bw*.39,bh*.60,bw*.22,bh*.29,5); c.fill(); c.strokeStyle='rgba(50,50,50,.3)'; c.stroke();
+  c.fillStyle='#333'; c.font='700 9px Arial'; c.textAlign='center'; c.fillText('',bw*.50,bh*.47);
+  c.restore();
+  // sponsor marks as physical stickers, not floating text
+  const stickers=[['NOTION',w*.31,h*.35],['GOOGLE',w*.59,h*.34],['AWS',w*.72,h*.44],['SPOTIFY',w*.27,h*.53],['CRED',w*.63,h*.54]];
+  for(const [label,x,y] of stickers){c.save(); c.translate(x,y); c.shadowColor='rgba(0,0,0,.28)'; c.shadowBlur=7; c.shadowOffsetY=3; c.fillStyle='rgba(245,242,235,.9)'; c.beginPath(); c.roundRect(-34,-12,68,24,5); c.fill(); c.shadowColor='transparent'; c.strokeStyle='rgba(80,75,65,.28)'; c.stroke(); c.fillStyle='#171717'; c.font='700 7px Arial'; c.textAlign='center'; c.textBaseline='middle'; c.fillText(label,0,1); c.restore();}
+  c.fillStyle='rgba(255,255,255,.55)'; c.font='700 11px Arial'; c.fillText('STarlight MacBook · fallback product render',18,h-18);
+}
+
 function renderFallback(canvas, label='3D preview unavailable'){
   const wrap=canvas.parentElement;
   wrap.classList.add('render-fallback');
+  drawProductFallback(canvas);
   const existing=wrap.querySelector('.render-fallback-message');
-  if(existing) return null;
-  const message=document.createElement('div');
-  message.className='render-fallback-message';
-  message.innerHTML=`<strong>${label}</strong><span>The GPU renderer could not be initialized or the graphics context was lost.</span><small>The page keeps a visual fallback instead of leaving the product area blank.</small>`;
-  wrap.appendChild(message);
-  return null;
+  if(existing) existing.remove();
+  const message=document.createElement('div'); message.className='render-fallback-message';
+  message.innerHTML=`<strong>Interactive 3D unavailable</strong><span>${label}. A detailed product render is shown instead, so the MacBook never disappears.</span><small>Interactive controls return automatically when a compatible GPU context is available.</small>`;
+  wrap.appendChild(message); return null;
 }
 
 async function setupRenderer(canvas){
+  const configure=(renderer)=>{ renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5)); renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=sceneState.exposure; renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap; return renderer; };
+  // First try the modern WebGPU path.
   try{
-    // WebGPURenderer is the modern Three.js renderer. It uses WebGPU when
-    // available and can fall back to a WebGL2 backend automatically.
-    const renderer=new THREE.WebGPURenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1,1.5));
-    renderer.outputColorSpace=THREE.SRGBColorSpace;
-    renderer.toneMapping=THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure=sceneState.exposure;
-    renderer.shadowMap.enabled=true;
-    renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-    await renderer.init();
-    canvas.addEventListener('webgpucontextlost',event=>{event.preventDefault();renderFallback(canvas,'3D preview paused');},{passive:false});
-    canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();renderFallback(canvas,'3D preview paused');},{passive:false});
+    if(WebGPU.isAvailable?.()){
+      const renderer=configure(new THREE.WebGPURenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance',preserveDrawingBuffer:false}));
+      await renderer.init();
+      return renderer;
+    }
+  }catch(error){ console.warn('WebGPU unavailable; trying WebGL2',error); }
+  // Then try the conventional WebGL2 renderer. The scene graph is shared with
+  // the WebGPU build, so this is a genuine renderer fallback, not a fake model.
+  try{
+    const renderer=configure(new THREEGL.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance',preserveDrawingBuffer:false}));
     return renderer;
   }catch(error){
-    console.error('GPU renderer initialization failed',error);
-    renderFallback(canvas,'3D preview could not start');
+    console.error('Both GPU renderers failed',error);
+    renderFallback(canvas,'Neither WebGPU nor WebGL2 could start');
     return null;
   }
 }
