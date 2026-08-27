@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import WebGL from 'three/addons/capabilities/WebGL.js';
 
 const slots = [
   { id:'hero', name:'Hero Badge', price:2999, position:'Upper centre lid', size:'Large', note:'Highest visibility' },
@@ -125,32 +126,119 @@ function buildLaptop(scene, detailed=false){
   return root;
 }
 
-function setupRenderer(canvas){
-  const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance'});
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=sceneState.exposure;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;return renderer;
+function renderFallback(canvas, label='3D preview unavailable'){
+  const wrap=canvas.parentElement;
+  wrap.classList.add('render-fallback');
+  const existing=wrap.querySelector('.render-fallback-message');
+  if(existing) return null;
+  const message=document.createElement('div');
+  message.className='render-fallback-message';
+  message.innerHTML=`<strong>${label}</strong><span>WebGL 2 could not be initialized on this device or the graphics context was lost.</span><small>Refresh the page or enable hardware acceleration in the browser.</small>`;
+  wrap.appendChild(message);
+  return null;
 }
+
+function setupRenderer(canvas){
+  if(!WebGL.isWebGL2Available()) return null;
+  try{
+    const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1,1.75));
+    renderer.outputColorSpace=THREE.SRGBColorSpace;
+    renderer.toneMapping=THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure=sceneState.exposure;
+    renderer.shadowMap.enabled=true;
+    renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    canvas.addEventListener('webglcontextlost',event=>{event.preventDefault(); renderFallback(canvas,'3D preview paused');},{passive:false});
+    return renderer;
+  }catch(error){
+    console.error('WebGL renderer initialization failed',error);
+    renderFallback(canvas);
+    return null;
+  }
+}
+
 function setupScene(canvas, detailed=false){
-  const scene=new THREE.Scene(); scene.background=new THREE.Color(0x090909);
-  const renderer=setupRenderer(canvas); const camera=new THREE.PerspectiveCamera(32,1,.02,5);camera.position.set(.38,.26,.38);
-  const controls=new OrbitControls(camera,canvas);controls.enableDamping=true;controls.dampingFactor=.07;controls.minDistance=.25;controls.maxDistance=.8;controls.target.set(0,.055,0);
-  const pmrem=new THREE.PMREMGenerator(renderer);scene.environment=pmrem.fromScene(new RoomEnvironment(renderer),0.04).texture;pmrem.dispose();
-  const key=new THREE.RectAreaLight(0xfff1d6,850,1.1,.7);key.position.set(.35,.48,.25);key.lookAt(0,0,0);scene.add(key);
-  const fill=new THREE.RectAreaLight(0xdde8ff,260,.8,.8);fill.position.set(-.4,.25,.15);fill.lookAt(0,.05,0);scene.add(fill);
-  const rim=new THREE.DirectionalLight(0xffd79c,2.0);rim.position.set(-.25,.5,-.35);rim.castShadow=true;rim.shadow.mapSize.set(2048,2048);rim.shadow.camera.near=.05;rim.shadow.camera.far=1.5;rim.shadow.camera.left=-.5;rim.shadow.camera.right=.5;rim.shadow.camera.top=.5;rim.shadow.camera.bottom=-.5;scene.add(rim);
-  const floor=new THREE.Mesh(new THREE.PlaneGeometry(3,3),new THREE.MeshPhysicalMaterial({color:0x111111,metalness:.05,roughness:.55}));floor.rotation.x=-Math.PI/2;floor.position.y=-.003;floor.receiveShadow=true;scene.add(floor);
-  const laptop=buildLaptop(scene,detailed);
-  const clock=new THREE.Clock();
-  function resize(){const r=canvas.getBoundingClientRect();renderer.setSize(Math.max(1,r.width),Math.max(1,r.height),false);camera.aspect=r.width/r.height;camera.updateProjectionMatrix()}
-  const ro=new ResizeObserver(resize);ro.observe(canvas);resize();
-  function frame(){requestAnimationFrame(frame);controls.update();renderer.toneMappingExposure=sceneState.exposure;key.intensity=sceneState.light;for(const child of laptop.userData.sponsorGroup.children) child.visible=true;renderer.render(scene,camera)} frame();
-  return {scene,renderer,camera,controls,laptop,key,resize};
+  const renderer=setupRenderer(canvas);
+  if(!renderer) return null;
+  try{
+    const scene=new THREE.Scene();
+    scene.background=new THREE.Color(0x090909);
+    const camera=new THREE.PerspectiveCamera(32,1,.02,5);
+    camera.position.set(.38,.26,.38);
+    const controls=new OrbitControls(camera,canvas);
+    controls.enableDamping=true;
+    controls.dampingFactor=.07;
+    controls.minDistance=.25;
+    controls.maxDistance=.8;
+    controls.target.set(0,.055,0);
+
+    const pmrem=new THREE.PMREMGenerator(renderer);
+    const room=new RoomEnvironment(renderer);
+    scene.environment=pmrem.fromScene(room,0.04).texture;
+    pmrem.dispose();
+    room.traverse?.(obj=>{ if(obj.geometry) obj.geometry.dispose(); });
+
+    const key=new THREE.RectAreaLight(0xfff1d6,850,1.1,.7);
+    key.position.set(.35,.48,.25);key.lookAt(0,0,0);scene.add(key);
+    const fill=new THREE.RectAreaLight(0xdde8ff,260,.8,.8);
+    fill.position.set(-.4,.25,.15);fill.lookAt(0,.05,0);scene.add(fill);
+    const rim=new THREE.DirectionalLight(0xffd79c,2.0);
+    rim.position.set(-.25,.5,-.35);rim.castShadow=true;
+    rim.shadow.mapSize.set(1024,1024);
+    rim.shadow.camera.near=.05;rim.shadow.camera.far=1.5;
+    rim.shadow.camera.left=-.5;rim.shadow.camera.right=.5;rim.shadow.camera.top=.5;rim.shadow.camera.bottom=-.5;
+    scene.add(rim);
+    const floor=new THREE.Mesh(new THREE.PlaneGeometry(3,3),new THREE.MeshPhysicalMaterial({color:0x111111,metalness:.05,roughness:.55}));
+    floor.rotation.x=-Math.PI/2;floor.position.y=-.003;floor.receiveShadow=true;scene.add(floor);
+    const laptop=buildLaptop(scene,detailed);
+    let raf=0, visible=true;
+    function resize(){
+      const r=canvas.getBoundingClientRect();
+      const width=Math.max(1,Math.floor(r.width));
+      const height=Math.max(1,Math.floor(r.height));
+      renderer.setSize(width,height,false);
+      camera.aspect=width/height;
+      camera.updateProjectionMatrix();
+    }
+    const ro=new ResizeObserver(resize);ro.observe(canvas);resize();
+    const io=new IntersectionObserver(entries=>{
+      visible=entries[0]?.isIntersecting ?? true;
+      if(visible && !raf) frame();
+    },{threshold:0.01});
+    io.observe(canvas);
+    function frame(){
+      if(!visible){raf=0;return;}
+      raf=requestAnimationFrame(frame);
+      controls.update();
+      renderer.toneMappingExposure=sceneState.exposure;
+      key.intensity=sceneState.light;
+      renderer.render(scene,camera);
+    }
+    frame();
+    return {scene,renderer,camera,controls,laptop,key,resize,io};
+  }catch(error){
+    console.error('3D scene initialization failed',error);
+    renderer.dispose();
+    renderFallback(canvas,'3D scene failed to initialize');
+    return null;
+  }
 }
 
 const heroScene=setupScene(document.querySelector('#hero-canvas'),false);
-heroScene.controls.autoRotate=true;heroScene.controls.autoRotateSpeed=.7;
-const studioScene=setupScene(document.querySelector('#studio-canvas'),true);studioScene.controls.autoRotate=true;studioScene.controls.autoRotateSpeed=.32;
+if(heroScene){heroScene.controls.autoRotate=true;heroScene.controls.autoRotateSpeed=.7;}
+let studioScene=null;
+const studioCanvas=document.querySelector('#studio-canvas');
+const studioObserver=new IntersectionObserver(entries=>{
+  if(entries[0]?.isIntersecting && !studioScene){
+    studioScene=setupScene(studioCanvas,true);
+    if(studioScene){studioScene.controls.autoRotate=true;studioScene.controls.autoRotateSpeed=.32;}
+    studioObserver.disconnect();
+  }
+},{rootMargin:'400px 0px'});
+studioObserver.observe(studioCanvas);
 
 function applyView(name, target){
+  if(!heroScene) return;
   heroScene.controls.autoRotate=false;
   const views={hero:[.38,.24,.38,.0,.05,.0],lid:[.02,.34,.34,0,.05,0],open:[.36,.25,.42,0,.05,0],keyboard:[.04,.48,.12,0,.02,0]};
   const v=views[name]||views.hero;heroScene.camera.position.set(v[0],v[1],v[2]);heroScene.controls.target.set(v[3],v[4],v[5]);heroScene.controls.update();
@@ -163,13 +251,14 @@ function selectSlot(slot){
  sceneState.selected=slot;const idx=slots.indexOf(slot);document.querySelectorAll('.slot-card').forEach(c=>c.classList.toggle('selected',c.dataset.slot===slot.id));
  document.querySelector('#bookingNo').textContent=String(idx+1).padStart(2,'0');document.querySelector('#bookingName').textContent=slot.name;document.querySelector('#bookingPosition').textContent=slot.position;document.querySelector('#bookingPrice').textContent=money.format(slot.price);
  document.querySelector('#bookingLink').href=`mailto:replace-with-your-email@example.com?subject=${encodeURIComponent('MacBook Ad Slot — '+slot.name)}&body=${encodeURIComponent('I am interested in the '+slot.name+' placement at '+money.format(slot.price)+'/month.')}`;
+ if(!heroScene) return;
  heroScene.laptop.userData.sponsorGroup.children.forEach((m,i)=>{m.visible=i===idx || idx===0; if(i===idx){m.scale.setScalar(1.08)}else m.scale.setScalar(.94)});
  heroScene.controls.autoRotate=false; applyView(idx===5?'keyboard':idx===0?'hero':'lid');
 }
 document.querySelectorAll('.slot-card').forEach(c=>c.addEventListener('click',()=>selectSlot(slots.find(s=>s.id===c.dataset.slot))));selectSlot(slots[0]);
 
-for(const [id,fn] of [['lightRange',v=>{sceneState.light=+v;document.querySelector('#lightValue').textContent=v+' W'}],['roughRange',v=>{sceneState.rough=+v;document.querySelector('#roughValue').textContent=(+v).toFixed(2);[heroScene,studioScene].forEach(s=>s.laptop.traverse(o=>{if(o.material?.metalness===1)o.material.roughness=+v}))}],['exposureRange',v=>{sceneState.exposure=+v;document.querySelector('#exposureValue').textContent=(+v).toFixed(2)}]]){
+for(const [id,fn] of [['lightRange',v=>{sceneState.light=+v;document.querySelector('#lightValue').textContent=v+' W'}],['roughRange',v=>{sceneState.rough=+v;document.querySelector('#roughValue').textContent=(+v).toFixed(2);[heroScene,studioScene].filter(Boolean).forEach(s=>s.laptop.traverse(o=>{if(o.material?.metalness===1)o.material.roughness=+v}))}],['exposureRange',v=>{sceneState.exposure=+v;document.querySelector('#exposureValue').textContent=(+v).toFixed(2)}]]){
  document.querySelector('#'+id).addEventListener('input',e=>fn(e.target.value));
 }
 
-window.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='r'){heroScene.camera.position.set(.38,.24,.38);heroScene.controls.target.set(0,.05,0);heroScene.controls.update();}});
+window.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='r' && heroScene){heroScene.camera.position.set(.38,.24,.38);heroScene.controls.target.set(0,.05,0);heroScene.controls.update();}});
