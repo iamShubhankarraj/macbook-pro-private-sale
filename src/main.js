@@ -1,10 +1,10 @@
 import './styles.css';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import WebGL from 'three/addons/capabilities/WebGL.js';
+import WebGPU from 'three/addons/capabilities/WebGPU.js';
 
 const slots = [
   { id:'hero', name:'Hero Badge', price:2999, position:'Upper centre lid', size:'Large', note:'Highest visibility' },
@@ -133,32 +133,35 @@ function renderFallback(canvas, label='3D preview unavailable'){
   if(existing) return null;
   const message=document.createElement('div');
   message.className='render-fallback-message';
-  message.innerHTML=`<strong>${label}</strong><span>WebGL 2 could not be initialized on this device or the graphics context was lost.</span><small>Refresh the page or enable hardware acceleration in the browser.</small>`;
+  message.innerHTML=`<strong>${label}</strong><span>The GPU renderer could not be initialized or the graphics context was lost.</span><small>The page keeps a visual fallback instead of leaving the product area blank.</small>`;
   wrap.appendChild(message);
   return null;
 }
 
-function setupRenderer(canvas){
-  if(!WebGL.isWebGL2Available()) return null;
+async function setupRenderer(canvas){
   try{
-    const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1,1.75));
+    // WebGPURenderer is the modern Three.js renderer. It uses WebGPU when
+    // available and can fall back to a WebGL2 backend automatically.
+    const renderer=new THREE.WebGPURenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1,1.5));
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure=sceneState.exposure;
     renderer.shadowMap.enabled=true;
     renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-    canvas.addEventListener('webglcontextlost',event=>{event.preventDefault(); renderFallback(canvas,'3D preview paused');},{passive:false});
+    await renderer.init();
+    canvas.addEventListener('webgpucontextlost',event=>{event.preventDefault();renderFallback(canvas,'3D preview paused');},{passive:false});
+    canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();renderFallback(canvas,'3D preview paused');},{passive:false});
     return renderer;
   }catch(error){
-    console.error('WebGL renderer initialization failed',error);
-    renderFallback(canvas);
+    console.error('GPU renderer initialization failed',error);
+    renderFallback(canvas,'3D preview could not start');
     return null;
   }
 }
 
-function setupScene(canvas, detailed=false){
-  const renderer=setupRenderer(canvas);
+async function setupScene(canvas, detailed=false){
+  const renderer=await setupRenderer(canvas);
   if(!renderer) return null;
   try{
     const scene=new THREE.Scene();
@@ -172,23 +175,21 @@ function setupScene(canvas, detailed=false){
     controls.maxDistance=.8;
     controls.target.set(0,.055,0);
 
-    const pmrem=new THREE.PMREMGenerator(renderer);
-    const room=new RoomEnvironment(renderer);
-    scene.environment=pmrem.fromScene(room,0.04).texture;
-    pmrem.dispose();
-    room.traverse?.(obj=>{ if(obj.geometry) obj.geometry.dispose(); });
-
-    const key=new THREE.RectAreaLight(0xfff1d6,850,1.1,.7);
-    key.position.set(.35,.48,.25);key.lookAt(0,0,0);scene.add(key);
-    const fill=new THREE.RectAreaLight(0xdde8ff,260,.8,.8);
-    fill.position.set(-.4,.25,.15);fill.lookAt(0,.05,0);scene.add(fill);
-    const rim=new THREE.DirectionalLight(0xffd79c,2.0);
-    rim.position.set(-.25,.5,-.35);rim.castShadow=true;
-    rim.shadow.mapSize.set(1024,1024);
-    rim.shadow.camera.near=.05;rim.shadow.camera.far=1.5;
-    rim.shadow.camera.left=-.5;rim.shadow.camera.right=.5;rim.shadow.camera.top=.5;rim.shadow.camera.bottom=-.5;
-    scene.add(rim);
-    const floor=new THREE.Mesh(new THREE.PlaneGeometry(3,3),new THREE.MeshPhysicalMaterial({color:0x111111,metalness:.05,roughness:.55}));
+    // Avoid a second GPU-heavy PMREM scene. The environment is represented by
+    // physically plausible broad lights plus a low-energy hemisphere fill.
+    const hemi=new THREE.HemisphereLight(0xf5eee2,0x171719,1.25);
+    scene.add(hemi);
+    const key=new THREE.DirectionalLight(0xffe5bd,3.8);
+    key.position.set(.35,.48,.25);key.castShadow=true;
+    key.shadow.mapSize.set(1024,1024);
+    key.shadow.camera.near=.02;key.shadow.camera.far=1.5;
+    key.shadow.camera.left=-.5;key.shadow.camera.right=.5;key.shadow.camera.top=.5;key.shadow.camera.bottom=-.5;
+    scene.add(key);
+    const fill=new THREE.PointLight(0xdde8ff,18,.9,2);
+    fill.position.set(-.4,.25,.15);scene.add(fill);
+    const rim=new THREE.DirectionalLight(0xffc77b,1.8);
+    rim.position.set(-.25,.5,-.35);scene.add(rim);
+    const floor=new THREE.Mesh(new THREE.PlaneGeometry(3,3),new THREE.MeshStandardMaterial({color:0x111111,metalness:.05,roughness:.55}));
     floor.rotation.x=-Math.PI/2;floor.position.y=-.003;floor.receiveShadow=true;scene.add(floor);
     const laptop=buildLaptop(scene,detailed);
     let raf=0, visible=true;
@@ -203,34 +204,42 @@ function setupScene(canvas, detailed=false){
     const ro=new ResizeObserver(resize);ro.observe(canvas);resize();
     const io=new IntersectionObserver(entries=>{
       visible=entries[0]?.isIntersecting ?? true;
-      if(visible && !raf) frame();
+      if(visible && !raf) startLoop();
     },{threshold:0.01});
     io.observe(canvas);
     function frame(){
-      if(!visible){raf=0;return;}
-      raf=requestAnimationFrame(frame);
+      if(!visible){raf=0;renderer.setAnimationLoop(null);return;}
       controls.update();
       renderer.toneMappingExposure=sceneState.exposure;
-      key.intensity=sceneState.light;
+      key.intensity=3.8*(sceneState.light/850);
       renderer.render(scene,camera);
     }
-    frame();
+    function startLoop(){
+      if(raf) return;
+      raf=1;
+      renderer.setAnimationLoop(frame);
+    }
+    startLoop();
     return {scene,renderer,camera,controls,laptop,key,resize,io};
   }catch(error){
     console.error('3D scene initialization failed',error);
-    renderer.dispose();
+    renderer.dispose?.();
     renderFallback(canvas,'3D scene failed to initialize');
     return null;
   }
 }
 
-const heroScene=setupScene(document.querySelector('#hero-canvas'),false);
-if(heroScene){heroScene.controls.autoRotate=true;heroScene.controls.autoRotateSpeed=.7;}
+let heroScene=null;
 let studioScene=null;
 const studioCanvas=document.querySelector('#studio-canvas');
-const studioObserver=new IntersectionObserver(entries=>{
+async function initHero(){
+  heroScene=await setupScene(document.querySelector('#hero-canvas'),false);
+  if(heroScene){heroScene.controls.autoRotate=true;heroScene.controls.autoRotateSpeed=.7;selectSlot(slots[0]);}
+}
+initHero();
+const studioObserver=new IntersectionObserver(async entries=>{
   if(entries[0]?.isIntersecting && !studioScene){
-    studioScene=setupScene(studioCanvas,true);
+    studioScene=await setupScene(studioCanvas,true);
     if(studioScene){studioScene.controls.autoRotate=true;studioScene.controls.autoRotateSpeed=.32;}
     studioObserver.disconnect();
   }
@@ -245,7 +254,7 @@ function applyView(name, target){
   document.querySelectorAll('.canvas-tools button').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
 }
 document.querySelectorAll('.canvas-tools button').forEach(b=>b.addEventListener('click',()=>applyView(b.dataset.view)));
-applyView('hero');
+// Initial camera state is applied after the hero renderer is ready.
 
 function selectSlot(slot){
  sceneState.selected=slot;const idx=slots.indexOf(slot);document.querySelectorAll('.slot-card').forEach(c=>c.classList.toggle('selected',c.dataset.slot===slot.id));
